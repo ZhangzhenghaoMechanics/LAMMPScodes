@@ -1,0 +1,207 @@
+
+####################Basic defaults###################
+units							metal
+atom_style						atomic
+####################Boundary################
+boundary						s   s   s														
+neighbor						2.0	bin
+neigh_modify					delay	1	every	1
+
+####################Name of file###################
+variable						name	string	GBbyPolyM60F3
+read_data						${name}.lmp
+mass 							1	63.55	
+# mass							1	58.69	#Ni
+# mass 							2	52.00	#Cr
+# mass 							3	55.85	#Fe
+####################variations###################
+
+variable						ts	    equal	0.001
+variable						p_xx	equal	pxx
+variable						p_yy	equal	pyy
+variable						p_zz	equal	pzz
+variable						p_xy	equal	pxy
+variable						p_yz	equal	pyz
+variable						p_xz	equal	pxz
+
+
+variable						ly0     equal ly
+variable						lx0     equal lx
+
+
+variable						stress_xy  equal -pxy/10000
+
+####################如果模型xOy原点在左下角###################
+
+# variable						mobile_up	equal	0.90*v_ly0
+# variable						mobile_low	equal	0.10*v_ly0
+
+
+####################如果模型xOy原点在正中心###################
+
+variable						mobile_up	equal	0.5*0.90*v_ly0
+variable						mobile_low	equal	-0.5*0.90*v_ly0
+
+compute							1					all stress/atom NULL
+compute							v					all	voronoi/atom
+variable						stressxx	atom	c_1[1]/(c_v[1]+1e-6)/10000
+variable						stressyy	atom	c_1[2]/(c_v[1]+1e-6)/10000
+variable						stresszz	atom	c_1[3]/(c_v[1]+1e-6)/10000
+variable						stressxy	atom	c_1[4]/(c_v[1]+1e-6)/10000
+variable						stressxz	atom	c_1[5]/(c_v[1]+1e-6)/10000
+variable						stressyz	atom	c_1[6]/(c_v[1]+1e-6)/10000
+variable						stressMises	atom	sqrt(((v_stressxx-v_stressyy)^2+(v_stressyy-v_stresszz)^2+(v_stresszz-v_stressxx)^2)/6+v_stressxy^2+v_stressyz^2+v_stressxz^2)
+
+#####################计算应变####################
+# # variable						ly0     equal ly
+# variable						ly00	equal	${ly0}
+# variable						strain equal (ly-v_ly00)/v_ly00
+
+variable						i		loop		30
+variable						srate	equal	1.0e9
+variable 						srate1 equal v_srate/1.0e12
+
+
+variable						e1	equal  	v_srate1*v_ly00/ly
+variable						e2	equal   -v_srate1*v_ly00/ly
+
+####################region & group##################
+
+region							lower	block INF INF INF		${mobile_low} 		INF INF
+region							upper	block	INF INF		${mobile_up} 	INF	 	INF INF
+group							lower region lower
+group							upper region upper
+group							boundary union lower upper
+group							mobile subtract all boundary
+
+####################potential energy###################
+# pair_style						eam/fs
+# pair_coeff						*	*	Cu.eam.fs Cu
+
+pair_style						eam
+pair_coeff						*	*	Cu_u3.eam
+
+####################dt & thermos###################
+timestep						${ts}
+thermo_style					custom	step	pxx pyy pzz pxy pyz pxz temp	etotal	lx ly lz press  pe
+thermo							50
+
+compute							stress	all stress/atom NULL
+compute							new3d mobile temp
+compute							new2d mobile temp/partial 1 0 1
+
+####################能量最小化##################
+min_style						cg
+minimize						1.0e-12	1.0e-15	10000	1000000
+reset_timestep					0
+write_data						${name}_stb.lmp
+
+####################创建速度#################
+# velocity						mobile	create 300 66666 temp new3d
+# velocity						all	create 300 66666 dist gaussian
+
+velocity						mobile	create 300 66666 dist gaussian
+
+
+####################NPT系综###########################
+# fix								NPTxyz	all npt temp 300 300 0.02	x 0 0 1 y 0 0 1 z 0 0 1
+fix                             NVT1 all nvt temp   300 300 0.02
+fix								2 boundary setforce 0.0 0.0 0.0
+
+
+
+dump								RlxDump	all custom 10000 rlx_${name}.lammpstrj id type x y z v_stressxx	v_stressyy	v_stresszz	v_stressxy	v_stressyz	v_stressxz	v_stressMises	vy
+fix									PrintRlxPxyz	all print 100 "step	${p_xx}	${p_yy} ${p_zz} ${p_xy} ${p_yz} ${p_xz}"	file	rlx_${name}.txt screen no
+run									50000
+write_data 							${name}_rlx.lmp
+# unfix                               NPTxyz
+
+# change_box                          all boundary s p p
+# fix								    2 boundary setforce 0.0 0.0 0.0
+# fix                                 NPTz all npt temp 300 300 0.02 z 0 0 1
+# run                                 20000
+# #unfix								3
+# reset_timestep						0
+undump								RlxDump
+
+
+#####################计算应变####################
+# variable						    ly0     equal ly
+variable						    lx00	equal	${lx0}
+variable						    strain_xy equal (lx-v_lx00)/v_lx00
+
+# ###@@@@@@@@@@@@@@@@@@@加载@@@@@@@@@@@@@@@@@@###
+variable						    velo1		equal	lx*100*0.001*0.001
+variable						    velo2		equal	-lx*100*0.001*0.001
+
+# velocity							upper set 0 ${velo1} 0                                          ####速度加载
+# velocity							mobile ramp vy 0.0 ${velo1} y ${mobile_low}	${mobile_up}        ####速度加载
+
+
+velocity							upper set ${velo1} 0    0                                       ####速度加载
+velocity							mobile ramp vx 0.0 ${velo1} y ${mobile_low}	${mobile_up}        ####速度加载
+
+# unfix                               NPTxyz
+# fix								    NPTxz	all npt temp 300 300 0.02	x 0 0 1 z 0 0 1
+# fix									defm_first_ten all deform 1 y  erate ${e1}  units box remap x    #####应变加载
+
+# # fix									3 mobile temp/rescale 10 300.0 300.0 10.0 0.6
+# # fix_modify							3 temp new2d
+
+
+fix									PrintStrainStress	all print 100 "step	${strain_xy}	${stress_xy}"	file	${name}.txt screen no
+dump								LoadDump all custom 10000 ${name}.lammpstrj id type x y z v_stressxx	v_stressyy	v_stresszz	v_stressxy	v_stressyz	v_stressxz	v_stressMises	vy
+
+
+run 								1500000
+write_data                          ${name}_deform.lmp
+
+##@@@@@@@@@@@@@@@@@@@恒应力幅周期加载主循环@@@@@@@@@@@@@@@@@@@@###
+
+# label								first_tensile
+# 				variable						N_fst_ten	loop	2000
+# 				run									100
+# 				min_style						cg
+# 				minimize						0.0	0.0	5000	5000 
+# 				if									"${stress}>=4.8"			then	"jump	SELF	first_tensile_break"
+# 				next								N_fst_ten
+# 				jump								SELF	first_tensile
+# 				label								first_tensile_break
+# 				unfix								defm_first_ten    
+# min_style						cg
+# minimize						0.0	0.0	5000	5000             
+
+# label								cycle_load
+# 				#velocity						upper set 0 ${velo2} 0
+# 				#velocity						mobile ramp vy 0.0 ${velo2} y ${mobile_low}	${mobile_up}
+# 				fix									defm_cycle_com all deform 1 y  erate ${e2}  units box remap x    ##ѹ��
+# 				label												cycle_compress
+# 								variable										N_cyc_com	loop	2000
+# 								run													100
+# 								min_style						cg
+# 								minimize						0.0	0.0	5000	5000 
+# 								if													"${stress}<=0.6"			then	"jump	SELF	cycle_compress_break"
+# 								next												N_cyc_com
+# 								jump												SELF	cycle_compress
+# 								label												cycle_compress_break
+# 								unfix												defm_cycle_com
+
+# 				min_style						cg
+# 				minimize						0.0	0.0	5000	5000
+# 				#velocity						upper set 0 ${velo1} 0
+# 				#velocity						mobile ramp vy 0.0 ${velo1} y ${mobile_low}	${mobile_up}
+# 				fix									defm_cycle_ten all deform 1 y  erate ${e1}  units box remap x    ##ѹ��
+# 				label												cycle_tensile
+# 								variable										N_cyc_ten	loop	2000
+# 								run													100
+# 								min_style						cg
+# 								minimize						0.0	0.0	5000	5000 
+# 								if													"${stress}>=4.8"			then	"jump	SELF	cyc_tensile_break"
+# 								next												N_cyc_ten
+# 								jump												SELF	cycle_tensile
+# 								label												cyc_tensile_break
+# 								unfix												defm_cycle_ten	
+# 				min_style						cg
+# 				minimize						0.0	0.0	5000	5000
+# next		i
+# jump  	SELF cycle_load
